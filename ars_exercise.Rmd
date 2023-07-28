@@ -1,0 +1,408 @@
+---
+title: "Who Farms in the USA?"
+output: html_document
+date: "2023-07-27"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+P. Alexander Burnham
+
+
+
+*The following is a report for my analysis of the 2017 USDA NASS dataset and USDA ARMS survey. The goal is to explore the distribution of new and beginning farmers and their income and wealth statistics.* 
+
+
+
+## Question 1:
+
+Use the 2017 USDA NASS dataset to examine new and beginning farmer (less than 11 years of experience) principal operators, as well as other relevant NASS data to answer ONE of the following questions:	In which states are the greatest proportion of farmers considered new and beginning?
+
+
+
+```{r, include=FALSE, message=FALSE}
+
+# install rdinter usda nass databass - online api interface
+#devtools::install_github("rdinter/usdarnass")
+
+library("devtools")
+library("usdarnass")
+library("dplyr")
+library("plotly")
+library("rjson")
+library("tidyr")
+library("ggplot2")
+library("lme4")
+library("car")
+
+
+```
+
+```{r, include=FALSE}
+# set my API Key provided by usda.gov
+nass_set_key("EF3ED042-BF10-3211-99FD-7C0ED7D8A3E3")
+```
+
+**Load In Data from NASS Dataset**            
+Here I selected the number of principle producers from each state with less than and greater than or equal to 11 years of experience. The sum of the two being the total number of principle producers in each state. I am using an an interface in R to access the NASS API using an API key provided by usda.gov. This ensures the code operates without a separate data repository and ensures the data are up to date when accessed. As the files are 5gb this reduces my overhead and simplifies reproducibility for other potential collaborators.
+```{r, include=TRUE, eval=FALSE}
+
+# get principle producers with less than 11 years experience -state level
+greatThan_11 <- nass_data(year = 2017,
+          short_desc = "PRODUCERS, PRINCIPAL, YEARS ON ANY OPERATION, LT 11 YEARS - NUMBER OF PRODUCERS",
+          agg_level_desc = "STATE")
+
+# get principle producers with greater than or equal to 11 years experience -state level
+lessThan_11 <- nass_data(year = 2017,
+          short_desc = "PRODUCERS, PRINCIPAL, YEARS ON ANY OPERATION, GE 11 YEARS - NUMBER OF PRODUCERS",
+          agg_level_desc = "STATE")
+
+```
+
+
+
+```{r, include=FALSE}
+
+setwd("/Users/pburnham/Documents/GitHub/ars_exercise")
+lessThan_11 <- read.csv("lessThan_11.csv", header = TRUE, stringsAsFactors = FALSE)
+greatThan_11 <- read.csv("greatThan_11.csv", header = TRUE, stringsAsFactors = FALSE)
+```
+
+
+
+**Merge datasets, select required columns**           
+Here I do the merge operation to combine the data and simplify the dataset for my purposes. 
+```{r, include=TRUE}
+
+# change value to greater11
+greatThan_11 <- greatThan_11 %>% 
+       rename("greater11" = "Value")
+
+# change value to less11
+lessThan_11 <- lessThan_11 %>% 
+       rename("less11" = "Value")
+
+# merge datasets by state alpha
+experienceMerged <- merge(greatThan_11, lessThan_11, by = "state_alpha")
+
+# select state alpha, greater11, and less11
+experienceClean <- dplyr::select(experienceMerged, less11, greater11, state_alpha, state_fips_code.x)
+
+```
+
+
+**Create percentage variable**            
+Here I ensure the variables of interest are numeric and create the percentage variable required.
+```{r, include=TRUE}
+
+# remove commas and convert to numeric vectors
+experienceClean$less11 <- as.numeric(gsub(",","",experienceClean$less11))
+experienceClean$greater11 <- as.numeric(gsub(",","",experienceClean$greater11))
+experienceClean$fips <- as.numeric(experienceClean$state_fips_code.x)
+
+# calculate the percentage here
+experienceClean$percentNew <- (experienceClean$less11/(experienceClean$less11 + experienceClean$greater11)) * 100
+
+```
+
+
+
+**Let's make a choropleth to explore the spatial distribution of this variable.**       
+Here I implement a plotly choropleth. It has some interactivity built into it. The ability to hover over states to see the state code and value is included as well as basic zooming and saving features. I find it to be a good exploratory plotting tool.
+
+
+### Percent of New and Beginning Principle Farm Operators in 2017
+```{r, echo=FALSE}
+
+g <- list(
+  scope = 'usa',
+  projection = list(type = 'albers usa'),
+  lakecolor = toRGB('white')
+)
+
+fig <- plot_geo() %>%
+  add_trace(
+    z = ~experienceClean$percentNew, text = experienceClean$state_alpha, span = I(0),
+    locations = experienceClean$state_alpha, locationmode = 'USA-states'
+  ) 
+
+fig <- fig %>% colorbar(title = "% New")
+fig <- fig %>% layout(
+    geo = g
+  )
+
+fig
+```
+
+
+
+**Let's plot a ranked bar plot with an average threshold line**       
+While the spatial plot is very helpful for looking for potential geographic patterns, it makes looking for max and min values more difficult at a glance. Here I calculated the national proportion of new primary producers to to all producers. I use a proportion test to calculate the confidence interval and find three sigma to find the interval between which 99.7 of the data will be found in a normal distribution.  
+```{r, include = TRUE}
+
+# find average percentage nation wide
+new <- sum(experienceClean$less11)
+total <- (sum(experienceClean$less11) + sum(experienceClean$greater11)) 
+
+# find average
+avg <- (new / total)*100
+
+# find confidence interval to calculate 3 sigma
+prop <- prop.test(new, total, correct=FALSE)
+threeSig <- (((prop$conf.int[2] - prop$conf.int[1])/4)*3)*100
+
+# create a variable for our three sigma calculation
+experienceClean$threeSigCat <- ifelse(experienceClean$percentNew>avg+threeSig, "Above", ifelse(experienceClean$percentNew<avg-threeSig, "Below", "Average"))
+```
+
+### Ranked Percent New and Beginning Primary Farm Operators for 2017
+```{r, echo = FALSE}
+# plot bar plot
+ggplot(experienceClean, aes(x=reorder(state_alpha, -percentNew), y=percentNew, fill = threeSigCat)) + 
+  geom_bar(stat="identity") +
+  theme_minimal() +
+  labs(x="State", y = "% New Primary Operator", fill = "Three Sigma") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  geom_hline(yintercept=c(avg), linetype='dashed', color=c('black')) +
+  scale_fill_manual(values = c("grey","dodgerblue4")) +
+  annotate("text", x = 40, y = 79, label = "National Percentage")
+```
+
+**Is there a difference between the state's proportions?**                
+With a significant p-value (p < 0.0001) I reject the null hypothesis and there appears to be evidence that the states differ in the proportion of new and beginning farmers. 
+```{r, echo = FALSE}
+
+mod <- prop.test(x=experienceClean$less11, n=(experienceClean$less11 + experienceClean$greater11))
+
+mod
+
+```
+
+
+### Summary
+The top five states with the highest percentage of new farmers in descending rank order were Delaware, South Dakota, North Dakota, Minnesota, and Wisconsin. The national percentage was 75.37% new and beginning farmers. In general, it seemed as though the highest influx of new farmers has been in the northern Midwest. As one of the largest farming centers in the country, this makes some sense. All states where either significantly higher or lower (3-sigma = 0.077%) than the national estimate. 21 states were below the 3 sigma margin and the remaining 29 were above. This may indicate that farming, varies culturally, environmentally, legislatively etc. so much from state to state that the national average is actually a poor population parameter estimate to compare to individual states. A proportion test indicated that there was a highly significant difference between the proportions of new and beginning farmers among states (p < 0.0001) In future and with more time, more complicated statistical models should be developed with other meaningful social, political and geographic parameters at the state level in order to examine further patterns in this variable.
+
+## Question 2:
+Using data from the USDA ARMS survey on farm income and wealth statistics, assess the relationship between new and beginning farmers and federal government direct farm payments.  To what extent is there a relationship between new and beginning farmer populations and federal government payments?  Where are these payments most common?
+
+
+
+
+**Get Data from the ARMS API**                
+Here I use a REST POST request to grab the data from the USDA ARMS API as a json file. I selected the three most recent years where direct payments were still being disbursed (ended in 2014). These are not perfectly in line with our 2017 new and beginning data but taking time lags and the speed of farmer turnover into account, some interesting patterns may still be observable. I requested state-level direct payment data and included economic class and production specialty as covariates. 
+
+```
+
+# my API endpoint
+https://api.ers.usda.gov/data/arms/surveydata?api_key=My_Key
+
+# my POST request:
+{
+    "year": [2011,2012,2013],
+    "state": ["Alabama", "Alaska", "American Samoa", "Arizona", "Arkansas", "California", "Colorado", "Connecticut", "Delaware", "District of Columbia", "Florida", "Georgia", "Guam", "Hawaii", "Idaho", "Illinois", "Indiana", "Iowa", "Kansas", "Kentucky", "Louisiana", "Maine", "Maryland", "Massachusetts", "Michigan", "Minnesota", "Minor Outlying Islands", "Mississippi", "Missouri", "Montana", "Nebraska", "Nevada", "New Hampshire", "New Jersey", "New Mexico", "New York", "North Carolina", "North Dakota", "Northern Mariana Islands", "Ohio", "Oklahoma", "Oregon", "Pennsylvania", "Puerto Rico", "Rhode Island", "South Carolina", "South Dakota", "Tennessee", "Texas", "U.S. Virgin Islands", "Utah", "Vermont", "Virginia", "Washington", "West Virginia", "Wisconsin", "Wyoming"],
+    "report": "government payments",
+    "category": ["economic class", "production specialty"],
+    "variable": "direct payments"
+
+}
+
+```
+
+
+**Read in Data and Select Relevant Columns**                
+Here I read in the data requested and select the columns for the analysis. The estimate variable is in 1000s of dollars so I create a new column taking this scaling into account.
+```{r, echo = TRUE, message=FALSE}
+
+# Loading packages
+library(jsonlite)
+
+# read in data as a data frame
+arms <- jsonlite::fromJSON("ARMS_direct_payment.json")$data
+
+# select data
+armsClean <- dplyr::select(arms, year, state, category, category_value, estimate)
+
+# estimate in 1000s of dollars
+armsClean$payments <- armsClean$estimate * 1000
+
+
+# Split data by category
+split <- split(armsClean, armsClean$category)
+specialty <- dplyr::select(split$`Production Specialty`, year, state, payments, category_value)
+class <- dplyr::select(split$`Economic Class`, year, state, payments, category_value)
+
+
+```
+
+
+
+```{r, echo = FALSE, message=FALSE}
+
+specSum <- specialty %>% 
+  group_by(year, category_value) %>% 
+  summarise(
+    mean = mean(payments, na.rm=T),
+    sd = sd(payments, na.rm=T),
+    n = length(payments),
+    se = sd/sqrt(n)
+  ) 
+
+
+classSum <- class %>% 
+  group_by(year, category_value) %>% 
+  summarise(
+    mean = mean(payments, na.rm=T),
+    sd = sd(payments, na.rm=T),
+    n = length(payments),
+    se = sd/sqrt(n)
+  ) 
+
+
+```
+
+
+
+**Lets plot payments by year for both categories**                    
+I summarize both datasets by year, state, and category_value using dplyr group_by.
+```{r, include = TRUE, echo=FALSE}
+
+# example of one of the dataframes after summary
+head(classSum)
+```
+
+### Average Direct Payment Amount Over Time by Farm Economic Class
+```{r, echo=FALSE}
+cl <- ggplot(data=classSum, aes(x=as.character(year), y=mean, group=category_value, color=category_value)) +
+  ylab("Average Direct Payment ($)") + # y axis label
+  xlab("Year") + # x axis label
+  theme_minimal(base_size = 14) + # size of the text and label ticks
+  geom_line(size=2) + # create lines and set thickness 
+  geom_point(size=4, shape=18) + # create points and set size and shape
+  geom_errorbar(aes(ymin=mean-se, ymax=mean+se), width=.2) +# add standard errors
+  theme(legend.position="top") +
+  guides(color=guide_legend(title="Class:", ncol = 2))
+cl
+```
+
+
+
+### Average Direct Payment Amount Over Time by Farm Primary Product
+```{r, echo=FALSE}
+sp <- ggplot(data=specSum, aes(x=as.character(year), y=mean, group=category_value, color=category_value)) +
+  ylab("Average Direct Payment ($)") + # y axis label
+  xlab("Year") + # x axis label
+  theme_minimal(base_size = 14) + # size of the text and label ticks
+  geom_line(size=2) + # create lines and set thickness 
+  geom_point(size=4, shape=18) + # create points and set size and shape
+  geom_errorbar(aes(ymin=mean-se, ymax=mean+se), width=.2) +# add standard errors
+  theme(legend.position="top") +
+  guides(color=guide_legend(title="Crop:", ncol = 3))
+sp
+
+
+```
+
+**Let's run a few quick statistical models to examine the patterns observed in those two figures above.**
+The distribution is heavily skewed right for both datasets. I will model the distributions using a gamma distribution to account for this.
+```{r, message=FALSE}
+# first with economic class
+modClass <- glm(data = class, payments~year * category_value, family = "Gamma")
+Anova(modClass, test.statistic="LR") # likelihood ratio test
+```
+
+```{r, message=FALSE}
+# remove 0s for gamma dist.
+specNo0 <- specialty[specialty$payments>0,]
+
+# next producer specialty
+modProd <- glm(data = specNo0, payments~year * category_value, family = "Gamma")
+Anova(modProd, test.statistic="LR") # likelihood ratio test
+```
+
+
+**Merge the datasets from questions 1 and 2**                              
+I will examine a state's proportion of new farmers to the amount of money in direct payments received in 2013. The most recent year it was issued. I will use the Economic class dataset in this merge with economic class as a potential covariate of interest.
+```{r, message=FALSE}
+# add state name to experience dataset
+experienceClean$state <- state.name[match(experienceClean$state_alpha,state.abb)] 
+
+# select experience vars for merge
+expSimple <- dplyr::select(experienceClean, percentNew, state)
+
+# do the merge for all x
+expClass <- merge(x=class, y=expSimple, all.x=T, all.y = F, by = "state")
+```
+
+
+### Direct Payments by Percent Primary Producers as a function of Economic Class
+```{r, echo=FALSE}
+ggplot(expClass[expClass$year==2013,], aes(x= percentNew, y= payments, color=category_value, label=state))+
+  geom_point() + geom_text(hjust=0, vjust=0) +
+  theme_minimal(base_size = 14) +
+  ylab("Average Direct Payment in 2013 ($)") + # y axis label
+  xlab("New Primary Producers in 2017 (%)") +# x axis label
+  guides(color=guide_legend(title="Class:", ncol = 3)) +
+  geom_smooth(method='lm', formula= y~x, se=F) +
+  theme(legend.position="top")
+
+```
+
+
+**Let's Examine the Significance of this Apparent Trend**           
+```{r, message=FALSE}
+# Experience model
+modExp <- glm(data = expClass[expClass$year==2013,], payments~percentNew * category_value, family = "Gamma")
+Anova(modExp, test.statistic="LR") # likelihood ratio test
+
+```
+
+**Let's pull the count data for direct payments at the state level**                            
+Which states had the highest number of payments in 2013?
+```{r, echo=FALSE}
+
+
+# read in data as a data frame
+armsFreq <- jsonlite::fromJSON("freq.json")$data
+
+# select data
+armsFreqClean <- dplyr::select(armsFreq, state, category, category_value, estimate)
+
+# Economic Class
+freqEcon <- armsFreqClean[armsFreqClean$category=="Economic Class",]
+
+freqSum <- freqEcon %>% 
+  group_by(state) %>% 
+  summarise(
+    sum = sum(estimate, na.rm=T),
+  ) 
+
+
+```
+
+
+```{r, echo=FALSE}
+
+
+# read in data as a data frame
+armsFreq <- jsonlite::fromJSON("freq.json")$data
+
+# select data
+armsFreqClean <- dplyr::select(armsFreq, state, category, category_value, estimate)
+
+# Economic Class
+freqEcon <- armsFreqClean[armsFreqClean$category=="Economic Class",]
+
+freqSum <- freqEcon %>% 
+  group_by(state) %>% 
+  summarise(
+    sum = sum(estimate, na.rm=T),
+  ) 
+
+freqSum[order(freqSum$sum, decreasing=TRUE),]
+```
+
+### Summary
+Only 15 states in the last 3 years of the program received funding. Arkansas, California, Florida, Georgia, Illinois, Indiana, Iowa, Kansas, Minnesota, Missouri, Nebraska, North Carolina, Texas, Washington, and Wisconsin. There were significant effects of economic class and production specialty on government direct payments (p < 0.0001), however, for the years I selected (2011-2013) there was no effect of year detected. The interaction effects of year on economic class and production specialty were also insignificant with this data selection. On average, farms with a higher economic class value (potentially larger commercial farms) and corn producers received the highest payments overall. To determine if these were significant, a corrected pairwise comparisons post-hoc test should be conducted. On average, states with higher percent new and beginning farmers in 2017 received higher direct payments in 2013 (x^2 = 21.7, p < 0.0001). There was also a significant difference in average payments between economic classes (x^2 = 46.0, p < 0.0001). A significant interaction between economic class and percent new primary producers indicates that the positive linear trends between these variables differ based on the economic class they are associated with (x^2 = 23.2, p = 0.0001). The states with the highest frequency of direct payments were Iowa, Illinois, Minnesota, Wisconsin, and Nebraska in decreasing rank order. The highest dollar amounts in terms of direct payments were also centered around Midwestern states like Illinois, Nebraska, Iowa. These were correlated with the highest corn producing states and the areas of highest percent new farmers as indicated by our choropleth. These significant effects of percent new and beginning farmers on direct payouts are likely correlated spatially with significant areas of farming. Further work would need to be done to attempt to parse the true nature of this relationship.
+
