@@ -323,7 +323,7 @@ Anova(modProd, test.statistic="LR") # likelihood ratio test
 
 
 **Merge the datasets from questions 1 and 2**                              
-I will examine a state's proportion of new farmers to the amount of money in direct payments received in 2013. The most recent year it was issued. I will use the Economic class dataset in this merge with economic class as a potential covariate of interest.
+I will examine a state's proportion of new farmers to the amount of money in direct payments received in 2013 (the most recent year it was issued). I will use the economic class dataset in this merge with economic class as a potential covariate of interest.
 ```{r, message=FALSE}
 # add state name to experience dataset
 experienceClean$state <- state.name[match(experienceClean$state_alpha,state.abb)] 
